@@ -1,19 +1,19 @@
 """Velocity-based action detectors for MotionLink v2.
 
-FLIP, SQUEEZE, and SEASON are action sub-states of GRAB. Each detector:
-    - only runs while the FSM is in GRAB (Lock 1, gated structurally)
-    - only runs in its own zone when enforce_zone is on (Lock 3)
-    - keeps a TIME-based sliding window of wrist samples so behavior is
-      consistent across 30fps / 60fps webcams
-    - has its own per-hand cooldown
-    - emits ActionEvent objects when its profile matches
+FLIP and combined SQUEEZE/SEASON are action sub-states of GRAB. Each detector:
+        - only runs while the FSM is in GRAB (Lock 1, gated structurally)
+        - uses hand-axis orientation to separate FLIP vs SQUEEZE/SEASON
+        - keeps a TIME-based sliding window of wrist samples so behavior is
+            consistent across 30fps / 60fps webcams
+        - has its own per-hand cooldown
+        - emits ActionEvent objects when its profile matches
 
 Lock 2 (correct tool held) is NOT checked here -- it lives in Unity,
 which is the only side that knows the player's inventory. Python sends
 candidate FLIP / SQUEEZE / SEASON events; Unity's ToolGate decides
 whether to apply gameplay effects.
 
-Run this module directly to test the three detectors in isolation:
+Run this module directly to test the two detectors in isolation:
     python velocity_detectors.py
 The standalone harness disables zone gating so you can fire any action
 from any spot on screen as long as you're in GRAB.
@@ -33,7 +33,7 @@ from gesture_primitives import HandFeatures
 class ActionEvent:
     """Velocity-detector output. Sent to Unity for triple-lock validation."""
     hand_label: str
-    action: str          # "FLIP" | "SQUEEZE" | "SEASON"
+    action: str          # "FLIP" | "SQUEEZE" (combined squeeze/season)
     timestamp: float
     zone: str
     wrist_x: float
@@ -50,10 +50,49 @@ def _prune(history: Deque[Sample], now: float, window_sec: float) -> None:
         history.popleft()
 
 
+def _mirror_zone(zone: str) -> str:
+    """Mirror a zone across the vertical axis (Z1<->Z3, Z4<->Z6)."""
+    return {
+        "Z1": "Z3",
+        "Z2": "Z2",
+        "Z3": "Z1",
+        "Z4": "Z6",
+        "Z5": "Z5",
+        "Z6": "Z4",
+    }.get(zone, zone)
+
+
+def _flip_zone_for(hand_label: str) -> str:
+    """Return the flip zone for this hand, accounting for mirrored preview."""
+    if config.WEBCAM_FLIP_HORIZ and hand_label == "R":
+        return _mirror_zone(config.ZONE_FLIP)
+    return config.ZONE_FLIP
+
+
+def _hand_axis(f: HandFeatures) -> str:
+    """Return dominant hand axis: "x", "y", or "unknown"."""
+    if len(f.landmarks) <= config.LM_MIDDLE_MCP:
+        return "unknown"
+    wrist = f.landmarks[config.LM_WRIST]
+    middle_mcp = f.landmarks[config.LM_MIDDLE_MCP]
+    dx = middle_mcp[0] - wrist[0]
+    dy = middle_mcp[1] - wrist[1]
+    adx = abs(dx)
+    ady = abs(dy)
+    if adx < 1e-6 and ady < 1e-6:
+        return "unknown"
+    ratio = config.HAND_AXIS_RATIO
+    if adx >= ady * ratio:
+        return "x"
+    if ady >= adx * ratio:
+        return "y"
+    return "unknown"
+
+
 # --- individual detectors -------------------------------------------------
 
 class FlipDetector:
-    """X-axis swipe with a velocity peak (spec: spatula flip on the grill)."""
+    """Y-axis back-and-forth with a velocity peak (spec: spatula flip)."""
 
     def __init__(self) -> None:
         self._history: Deque[Sample] = deque()
@@ -72,35 +111,54 @@ class FlipDetector:
         if len(self._history) < config.FLIP_MIN_SAMPLES:
             return False
 
-        peak_v = self._peak_x_velocity()
-        x0, y0, _ = self._history[0]
-        x1, y1, _ = self._history[-1]
-        dx = x1 - x0
-        dy = y1 - y0
+        peak_v = self._peak_y_velocity()
+        ys = [s[1] for s in self._history]
+        xs = [s[0] for s in self._history]
+        dy_total = max(ys) - min(ys)
+        dx_total = max(xs) - min(xs)
+        changes = self._y_direction_changes()
 
         if (peak_v >= config.FLIP_PEAK_VELOCITY
-                and abs(dx) >= config.FLIP_MIN_DISPLACEMENT
-                and abs(dx) >= config.FLIP_HORIZONTAL_RATIO * abs(dy)):
+                and dy_total >= config.FLIP_MIN_DISPLACEMENT
+                and changes >= 1
+                and dy_total >= config.FLIP_VERTICAL_RATIO * dx_total):
             self._last_fire = now
             self._history.clear()
             return True
         return False
 
-    def _peak_x_velocity(self) -> float:
+    def _peak_y_velocity(self) -> float:
         max_v = 0.0
         prev = self._history[0]
         for s in list(self._history)[1:]:
             dt = s[2] - prev[2]
             if dt > 1e-6:
-                v = abs((s[0] - prev[0]) / dt)
+                v = abs((s[1] - prev[1]) / dt)
                 if v > max_v:
                     max_v = v
             prev = s
         return max_v
 
+    def _y_direction_changes(self) -> int:
+        """Count Y-velocity sign flips (ignoring near-zero jitter)."""
+        changes = 0
+        prev_y = self._history[0][1]
+        prev_sign = 0
+        for s in list(self._history)[1:]:
+            dy = s[1] - prev_y
+            if abs(dy) < 1e-5:
+                prev_y = s[1]
+                continue
+            sign = 1 if dy > 0 else -1
+            if prev_sign and sign != prev_sign:
+                changes += 1
+            prev_sign = sign
+            prev_y = s[1]
+        return changes
+
 
 class SqueezeDetector:
-    """Brief downward Y press in image space (spec: bottle squeeze)."""
+    """Gentle Y-axis back-and-forth (combined squeeze/season)."""
 
     def __init__(self) -> None:
         self._history: Deque[Sample] = deque()
@@ -120,63 +178,34 @@ class SqueezeDetector:
 
         ys = [s[1] for s in self._history]
         xs = [s[0] for s in self._history]
-        n = len(ys)
-        half = max(1, n // 2)
-        first_half_avg  = sum(ys[:half]) / half
-        second_half_avg = sum(ys[half:]) / max(1, n - half)
         dy_total = max(ys) - min(ys)
         dx_total = max(xs) - min(xs)
-        is_downward = (second_half_avg - first_half_avg) > 0
-        is_vertical = dy_total >= config.SQUEEZE_VERTICAL_RATIO * dx_total
+        changes = self._y_direction_changes()
 
         if (dy_total >= config.SQUEEZE_MIN_Y_DROP
-                and is_downward
-                and is_vertical):
+                and changes >= config.SEASON_MIN_DIR_CHANGES
+                and dy_total >= config.SQUEEZE_VERTICAL_RATIO * dx_total):
             self._last_fire = now
             self._history.clear()
             return True
         return False
 
-
-class SeasonDetector:
-    """Rapid X-axis oscillation (spec: salt / pepper shaker)."""
-
-    def __init__(self) -> None:
-        self._history: Deque[Sample] = deque()
-        self._last_fire: float = 0.0
-
-    def reset(self) -> None:
-        self._history.clear()
-
-    def update(self, f: HandFeatures, now: float) -> bool:
-        self._history.append((f.wrist_x, f.wrist_y, now))
-        _prune(self._history, now, config.SEASON_WINDOW_SEC)
-
-        if now - self._last_fire < config.SEASON_COOLDOWN_SEC:
-            return False
-        if len(self._history) < config.SEASON_MIN_SAMPLES:
-            return False
-
-        xs = [s[0] for s in self._history]
-        # Count X-velocity sign flips with sufficient per-frame delta.
+    def _y_direction_changes(self) -> int:
+        """Count Y-velocity sign flips (ignoring small jitter)."""
         changes = 0
-        for i in range(2, len(xs)):
-            v_prev = xs[i - 1] - xs[i - 2]
-            v_curr = xs[i]     - xs[i - 1]
-            if (v_prev * v_curr < 0
-                    and (abs(v_prev) >= config.SEASON_PER_FRAME_DELTA
-                         or abs(v_curr) >= config.SEASON_PER_FRAME_DELTA)):
+        prev_y = self._history[0][1]
+        prev_sign = 0
+        for s in list(self._history)[1:]:
+            dy = s[1] - prev_y
+            if abs(dy) < config.SEASON_PER_FRAME_DELTA:
+                prev_y = s[1]
+                continue
+            sign = 1 if dy > 0 else -1
+            if prev_sign and sign != prev_sign:
                 changes += 1
-        amplitude = max(xs) - min(xs)
-
-        if (changes >= config.SEASON_MIN_DIR_CHANGES
-                and amplitude >= config.SEASON_MIN_X_AMPLITUDE):
-            self._last_fire = now
-            # Don't clear -- cooldown alone caps fire rate at ~3.3 Hz
-            # during sustained shaking, which is what we want for a
-            # salt/pepper sprinkle.
-            return True
-        return False
+            prev_sign = sign
+            prev_y = s[1]
+        return changes
 
 
 # --- per-hand bank --------------------------------------------------------
@@ -189,7 +218,6 @@ class VelocityDetectorBank:
         self.enforce_zone = enforce_zone
         self.flip = FlipDetector()
         self.squeeze = SqueezeDetector()
-        self.season = SeasonDetector()
 
     def update(self, features: Optional[HandFeatures],
                state: GestureState, now: float) -> List[ActionEvent]:
@@ -204,32 +232,25 @@ class VelocityDetectorBank:
             return []
 
         events: List[ActionEvent] = []
-        zone = features.zone
+        axis = _hand_axis(features)
 
-        if not self.enforce_zone or zone == config.ZONE_FLIP:
+        if axis in ("y", "unknown"):
             if self.flip.update(features, now):
                 events.append(self._make_event("FLIP", features, now))
         else:
             self.flip.reset()
 
-        if not self.enforce_zone or zone == config.ZONE_SQUEEZE:
+        if axis in ("x", "unknown"):
             if self.squeeze.update(features, now):
                 events.append(self._make_event("SQUEEZE", features, now))
         else:
             self.squeeze.reset()
-
-        if not self.enforce_zone or zone == config.ZONE_SEASON:
-            if self.season.update(features, now):
-                events.append(self._make_event("SEASON", features, now))
-        else:
-            self.season.reset()
 
         return events
 
     def _reset_all(self) -> None:
         self.flip.reset()
         self.squeeze.reset()
-        self.season.reset()
 
     def _make_event(self, action: str, f: HandFeatures, now: float
                     ) -> ActionEvent:
@@ -248,7 +269,6 @@ class VelocityDetectorBank:
 _ACTION_COLORS = {
     "FLIP":    (60,  220, 60),    # green
     "SQUEEZE": (60,  140, 255),   # orange
-    "SEASON":  (220, 60,  220),   # magenta
 }
 
 
@@ -281,9 +301,8 @@ def _run_webcam_test() -> None:
 
     print("MotionLink velocity-detector test (enforce_zone=False).")
     print("Make a FIST (enter GRAB), then while staying in GRAB:")
-    print("  FLIP    - swipe wrist horizontally (>=15% frame width, fast)")
-    print("  SQUEEZE - press wrist downward (>=6% frame height, mostly vertical)")
-    print("  SEASON  - shake wrist left/right rapidly (3+ direction changes / 0.5s)")
+    print("  FLIP            - move wrist up/down quickly (back-and-forth)")
+    print("  SQUEEZE/SEASON  - gentle wrist up/down while in GRAB")
     print("Press q in the video window to quit.\n")
 
     with mp_hands.Hands(

@@ -79,35 +79,33 @@ IDLE_MOTION_THRESHOLD = 0.02  # normalized wrist drift counted as motion
 IDLE_HISTORY_LEN      = 15    # wrist samples in the motion window (~0.5s)
 
 # --- velocity detectors (velocity_detectors.py) --------------------------
-# All three action detectors only run while the FSM is in GRAB (Lock 1)
-# and -- when enforce_zone is on -- only in their own zone (Lock 3). Each
-# detector keeps a TIME-based sliding window of wrist samples so behavior
-# is the same at 30fps and 60fps webcams.
+# Both action detectors only run while the FSM is in GRAB (Lock 1).
+# Each detector keeps a TIME-based sliding window of wrist samples so
+# behavior is the same at 30fps and 60fps webcams.
 
-# FLIP: an X-axis swipe in Z6 (grill).
+# Hand-axis orientation gating for action separation.
+HAND_AXIS_RATIO          = 1.25   # dominant axis must exceed this ratio
+
+# FLIP: a Y-axis back-and-forth in Z6 (grill).
 FLIP_WINDOW_SEC          = 0.40   # samples kept in the sliding window
 FLIP_MIN_SAMPLES         = 5      # minimum samples before evaluating
-FLIP_PEAK_VELOCITY       = 1.5    # min peak |dx/dt| in normalized units / sec
-FLIP_MIN_DISPLACEMENT    = 0.15   # min |x_last - x_first| over the window
-FLIP_HORIZONTAL_RATIO    = 2.0    # |dx| must exceed this * |dy| (mostly horizontal)
+FLIP_PEAK_VELOCITY       = 1.5    # min peak |dy/dt| in normalized units / sec
+FLIP_MIN_DISPLACEMENT    = 0.15   # min |y_max - y_min| over the window
+FLIP_VERTICAL_RATIO      = 2.0    # |dy| must exceed this * |dx| (mostly vertical)
 FLIP_COOLDOWN_SEC        = 1.0
 
-# SQUEEZE: a brief downward Y press in Z5 (assembly).
-SQUEEZE_WINDOW_SEC       = 0.40
+# SQUEEZE/SEASON: gentle Y-axis oscillation in Z5 (assembly).
+SQUEEZE_WINDOW_SEC       = 0.60
 SQUEEZE_MIN_SAMPLES      = 6
-SQUEEZE_MIN_Y_DROP       = 0.06   # min total Y range over the window
-SQUEEZE_VERTICAL_RATIO   = 1.3    # |dy| must exceed this * |dx| (mostly vertical)
+SQUEEZE_MIN_Y_DROP       = 0.04   # min total Y range over the window
+SQUEEZE_VERTICAL_RATIO   = 1.2    # |dy| must exceed this * |dx| (mostly vertical)
 SQUEEZE_COOLDOWN_SEC     = 0.5
 
-# SEASON: rapid X-axis oscillation in Z5 (assembly).
-SEASON_WINDOW_SEC        = 0.50
-SEASON_MIN_SAMPLES       = 8
-SEASON_MIN_DIR_CHANGES   = 3      # number of X-velocity sign flips in window
-SEASON_MIN_X_AMPLITUDE   = 0.04   # min total X range over the window
-SEASON_PER_FRAME_DELTA   = 0.005  # min |dx| between consecutive frames to count
-SEASON_COOLDOWN_SEC      = 0.3
+# Direction-change thresholds used by the combined squeeze/season detector.
+SEASON_MIN_DIR_CHANGES   = 1      # number of Y-velocity sign flips in window
+SEASON_PER_FRAME_DELTA   = 0.003  # min |dy| between consecutive frames to count
 
-# Zone gating for the action-tier detectors. enforce_zone=True in main.py.
+# Zone labels for action-tier detectors (gating disabled for all-zone use).
 ZONE_FLIP    = "Z6"   # grill
 ZONE_SQUEEZE = "Z5"   # assembly
 ZONE_SEASON  = "Z5"   # assembly
