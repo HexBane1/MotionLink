@@ -32,12 +32,12 @@ LM_PINKY_TIP   = 20
 # TIP is at least this multiple of the wrist-to-PIP distance. When the
 # finger is curled into a fist the tip comes back toward the palm and the
 # ratio drops below 1; fully extended fingers sit around 1.7-2.0.
-FINGER_EXTEND_RATIO = 1.30
+FINGER_EXTEND_RATIO = 1.20
 
 # Thumb is extended when the 2D distance from thumb tip to index MCP
 # exceeds this multiple of hand_scale. Tucked thumb sits at ~0.4 * scale,
 # splayed thumb at ~1.3 * scale, so 0.55 is a safe midpoint.
-THUMB_EXTEND_SCALE  = 0.55
+THUMB_EXTEND_SCALE  = 0.50
 
 # Palm-up detection. We compute the palm normal from the
 # (index_mcp, wrist, pinky_mcp) triangle and project it onto the camera
