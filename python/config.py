@@ -66,7 +66,7 @@ POSE_EXIT_FRAMES     = 4
 # Open-finger thresholds for HOLD / RELEASE entry vs. exit. Entry requires
 # the strict count; exit fires when the count drops to or below the loose
 # count (so open_count == 3 keeps you in HOLD without progress toward exit).
-STATIC_POSE_OPEN_MIN_ENTRY = 4
+STATIC_POSE_OPEN_MIN_ENTRY = 5
 STATIC_POSE_OPEN_MAX_EXIT  = 2
 
 # GRAB: closed-fist breach when at least this many fingers go open.
@@ -86,7 +86,7 @@ IDLE_HISTORY_LEN      = 15    # wrist samples in the motion window (~0.5s)
 # Hand-axis orientation gating for action separation.
 HAND_AXIS_RATIO          = 1.25   # dominant axis must exceed this ratio
 
-# FLIP: a Y-axis back-and-forth in Z6 (grill).
+# FLIP: a Y-axis back-and-forth.
 FLIP_WINDOW_SEC          = 0.40   # samples kept in the sliding window
 FLIP_MIN_SAMPLES         = 5      # minimum samples before evaluating
 FLIP_PEAK_VELOCITY       = 1.5    # min peak |dy/dt| in normalized units / sec
@@ -94,7 +94,7 @@ FLIP_MIN_DISPLACEMENT    = 0.15   # min |y_max - y_min| over the window
 FLIP_VERTICAL_RATIO      = 2.0    # |dy| must exceed this * |dx| (mostly vertical)
 FLIP_COOLDOWN_SEC        = 1.0
 
-# SQUEEZE/SEASON: gentle Y-axis oscillation in Z5 (assembly).
+# SQUEEZE/SEASON: gentle Y-axis oscillation.
 SQUEEZE_WINDOW_SEC       = 0.60
 SQUEEZE_MIN_SAMPLES      = 6
 SQUEEZE_MIN_Y_DROP       = 0.04   # min total Y range over the window
